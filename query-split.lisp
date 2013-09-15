@@ -131,7 +131,6 @@
 ;;; literal nil's from or expressions and convert empty ands to t and
 ;;; or to nil. Again, this should probably be done from the bottom up.
 
-
 (defun simplify (exp)
   (typecase exp
     (symbol
@@ -143,6 +142,94 @@
            (and (simplify-and/or operator simple-args t))
            (or (simplify-and/or operator simple-args nil))
            (not (simplify-not simple-args))))))))
+
+(defun simplify-and (exp)
+  (destructuring-bind (op arg1 arg2) exp
+    (assert (eql op 'and))
+    (if (equal arg1 arg2)
+        arg1
+        (let ((arg1 (maybe-rewrite arg1 (must-be t arg2)))
+              (arg2 (maybe-rewrite arg2 (must-be t arg1))))
+          (cond
+            ((or (eql arg1 nil) (eql arg2 nil)) nil)
+            ((eql arg1 t) arg2)
+            ((eql arg2 t) arg1)
+            ((equal arg1 arg2) arg1)
+            ((equal arg1 `(not ,arg2)) nil)
+            ((equal arg2 `(not ,arg1)) nil)
+            (t `(,op ,arg1 ,arg2)))))))
+
+(defun simplify-or (exp)
+  (destructuring-bind (op arg1 arg2) exp
+    (assert (eql op 'or))
+    (if (equal arg1 arg2) ;; need to check this before rewriting
+        arg1
+        (let ((arg1 (maybe-rewrite arg1 (must-be nil arg2)))
+              (arg2 (maybe-rewrite arg2 (must-be nil arg1))))
+          (cond
+            ((or (eql arg1 t) (eql arg2 t)) t)
+            ((eql arg1 nil) arg2)
+            ((eql arg2 nil) arg1)
+            ((equal arg1 arg2) arg1)
+            ((equal arg1 `(not ,arg2)) t)
+            ((equal arg2 `(not ,arg1)) t)
+            (t `(,op ,arg1 ,arg2)))))))
+
+
+(defun maybe-rewrite (exp must-be-table)
+  (let ((new (sublis must-be-table exp)))
+    (if (not (equal new exp)) (simplify new) exp)))
+
+
+(defun simplify-and/or (op simple-args identity)
+  (let ((args (remove-duplicates (remove identity simple-args) :test #'equal)))
+    (cond
+      ;; no interesting args, identity for this operator
+      ((not args) identity)
+
+      ;; (and ... nil ...) is nil and (or ... t ...) is t
+      ((member (not identity) args) (not identity))
+
+      ;; Only one distinct arg, it's the value
+      ((only-one args) (first args))
+
+      ;; !a & a => nil; !a | a => t
+      ((opposite-p (first args) (second args)) (not identity))
+
+
+      ((and (symbolp (first args)) (consp (second args)))
+       (let* ((sym (first args))
+              (other (second args))
+              (other-simplified (simplify (subst identity sym other))))
+         (if (equal other other-simplified)
+             `(,op ,sym ,other)
+             (simplify `(,op ,sym ,other-simplified)))))
+      ((and (symbolp (second args)) (consp (first args)))
+       (let* ((sym (second args))
+              (other (first args))
+              (other-simplified (simplify (subst identity sym other))))
+         (if (equal other other-simplified)
+             `(,op ,other ,sym)
+             (simplify `(,op ,other-simplified ,sym)))))
+      (t `(,op ,@args)))))
+
+(defun simplify-not (simple-args)
+  (destructuring-bind (arg) simple-args
+    (cond
+      ((eql arg t) nil)
+      ((eql arg nil) t)
+      ((not-expression-p arg) (second arg))
+      (t `(not ,arg)))))
+
+(defun only-one (list) (not (rest list)))
+
+(defun not-expression-p (x) (and (consp x) (eql (first x) 'not)))
+
+(defun opposite-p (arg1 arg2)
+  (or (and (not-expression-p arg1) (equal (second arg1) arg2))
+      (and (not-expression-p arg2) (equal (second arg2) arg1))))
+
+
 
 (defun flatten (exp)
   "Flatten expression so binary and's and or's are turned into multi-arg versions."
@@ -192,62 +279,14 @@ we're in the context of op."
         (not (must-be (not value) (cadr expr))))))))
 
 
-;; (and (and a b) (and d c)) => `(,and ,@(and-terms '(and a b)) ,@(and-terms '(and d c)))
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Generating random expressions
 
-;;; Some other simplifications:
-
-;;; (or a X) or (or X a)               => can replace all occurences of a in X with nil and then simplify X.
-;;; (and a X) or (and X a)             => can replace all occurences of a in X with t and then simplify X
-;;; (or (not a) X) or (or X (not a))   => can replace all occurences of a in X with t and then simplify X.
-;;; (and (not a) X) or (and X (not a)) => can replace all occurences of a in X with nil and then simplify X
-
-(defun simplify-and/or (op simple-args identity)
-  (let ((args (remove-duplicates (remove identity simple-args) :test #'equal)))
-    (cond
-      ;; no interesting args, identity for this operator
-      ((not args) identity)
-
-      ;; (and ... nil ...) is nil and (or ... t ...) is t
-      ((member (not identity) args) (not identity))
-
-      ;; Only one distinct arg, it's the value
-      ((only-one args) (first args))
-
-      ;; !a & a => nil; !a | a => t
-      ((opposite-p (first args) (second args)) (not identity))
-
-
-      ((and (symbolp (first args)) (consp (second args)))
-       (let* ((sym (first args))
-              (other (second args))
-              (other-simplified (simplify (subst identity sym other))))
-         (if (equal other other-simplified)
-             `(,op ,sym ,other)
-             (simplify `(,op ,sym ,other-simplified)))))
-      ((and (symbolp (second args)) (consp (first args)))
-       (let* ((sym (second args))
-              (other (first args))
-              (other-simplified (simplify (subst identity sym other))))
-         (if (equal other other-simplified)
-             `(,op ,other ,sym)
-             (simplify `(,op ,other-simplified ,sym)))))
-      (t `(,op ,@args)))))
-
-(defun simplify-not (simple-args)
-  (destructuring-bind (arg) simple-args
-    (cond
-      ((eql arg t) nil)
-      ((eql arg nil) t)
-      ((not-expression-p arg) (second arg))
-      (t `(not ,arg)))))
-
-(defun only-one (list) (not (rest list)))
-
-(defun not-expression-p (x) (and (consp x) (eql (first x) 'not)))
-
-(defun opposite-p (arg1 arg2)
-  (or (and (not-expression-p arg1) (equal (second arg1) arg2))
-      (and (not-expression-p arg2) (equal (second arg2) arg1))))
+;;; (Better way: generate a truth table (in the form of a list of
+;;; lists of boolean values for which the expression evaluates to
+;;; true) in which we ensure that some of the cheap-variable prefixes
+;;; are all false. Those are the ones for which the cheap filter
+;;; should be able to return false.)
 
 (defun random-variables (cheap expensive)
   (nconc

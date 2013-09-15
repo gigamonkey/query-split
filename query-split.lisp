@@ -23,10 +23,11 @@
 
 (defun unparse (expression)
   (typecase expression
-    (symbol (case expression
-              ((t) "T")
-              ((nil) "F")
-              (t (format nil "~(~a~)" expression))))
+    (symbol
+     (case expression
+       ((t) "T")
+       ((nil) "F")
+       (t (string-downcase expression))))
     (cons
      (destructuring-bind (op . args) expression
        (format nil "(~(~a~) ~{~a~^ ~})" op (mapcar #'unparse args))))))
@@ -102,7 +103,9 @@
   alist of expressions whose value we can determine. E.g. if (and a b)
   must be t then we know both a and b must also be t."
   (typecase expr
-    (symbol (list (cons expr value)))
+    (symbol
+     (unless (literal-p expr)
+       (list (cons expr value))))
     (cons
      (cons
       (cons expr value)

@@ -9,33 +9,33 @@ Write a program whose input is a boolean expression (some combination of ANDs, O
 
 In slightly more formal terms, given a function f of n variables, the first k < n of which are cheap, you need to produce g such that:
 
-  f(v1,v2,..vn) = g(v1,v2,...vk) && f(v1,v2,..vn)
+    f(v1,v2,..vn) = g(v1,v2,...vk) && f(v1,v2,..vn)
 
 Or, to put it another way:
 
-  !g(v1,v2,...vk) implies !f(v1,v2,...vn)
+    !g(v1,v2,...vk) implies !f(v1,v2,...vn)
 
 For purposes of this challenge, you need to write a program that can parse the following grammar:
 
-  formula     := variable | literal | expression
-  variable    := cheap | expensive
-  cheap       := v[0-9]+
-  expensive   := w[0-9]+
-  literal     := "T" | "F"
-  expression  := conjunction | disjunction | negation
-  conjunction := "(and" ws formula ws formula ")"
-  disjunction := "(or" ws formula ws formula ")"
-  negation    := "(not" ws formula ")"
-  ws          := " "+
+    formula     := variable | literal | expression
+    variable    := cheap | expensive
+    cheap       := v[0-9]+
+    expensive   := w[0-9]+
+    literal     := "T" | "F"
+    expression  := conjunction | disjunction | negation
+    conjunction := "(and" ws formula ws formula ")"
+    disjunction := "(or" ws formula ws formula ")"
+    negation    := "(not" ws formula ")"
+    ws          := " "+
 
 Then write a program that takes a file containing expressions in the form, one per line, and output a file containing for each input expression a pre-filter that uses only the cheap variables.
 
 Your entry is disqualified for any of your pre-filters, g:
 
-  input.exists { x => f(x) != (g(x) && f(x)) } // i.e. must be correct
+    input.exists { x => f(x) != (g(x) && f(x)) } // i.e. must be correct
 
 And correct pre-filters should maximize:
 
-  input.count { x => !g(x) }
+    input.count { x => !g(x) }
 
 All other things being equal, smaller pre-filters (measured by tree size of the expression) beat bigger ones. Style points are awarded for efficient computation and general cleverness. The grand prize is bragging rights and the satisfaction of a job well done.

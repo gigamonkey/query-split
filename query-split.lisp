@@ -4,6 +4,18 @@
 
 (in-package :query-split)
 
+
+(defun code-challenge (file)
+  (with-open-file (in file)
+      (loop for line = (read-line in nil nil) while line
+         do (write-line (unparse (first-pass-predicate (parse line)))))))
+
+(defun write-results (file)
+  (with-open-file (*standard-output*
+                   (make-pathname :type "out" :defaults file)
+                   :direction :output :if-exists :supersede)
+    (code-challenge file)))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Parsing
 
@@ -50,7 +62,6 @@
 (defun literal-p (var) (member var '(t nil)))
 
 (defun cheap-p (var) (char= (char (string var) 0) #\V))
-
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Expression simplification.
@@ -156,17 +167,11 @@
                             ,(random-expression (1- n) vars)))
             (not `(,op ,(random-expression (1- n) vars)))))))))
 
-(defun foo (iters depth vars)
-  (loop repeat iters
-     for exp = (random-expression depth vars)
-     collect `((:expression ,(output exp)) (:first-pass ,(output (first-pass-predicate exp))))))
-
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Testing.
 
-;;; 1. parse and unparse are identities. Generate random expression.
-;;; (equal original (parse (unparse original)))
+;;; 1. parse and unparse are inverses. Generate random expressions and
+;;; check. (equal original (parse (unparse original)))
 
 (defun test-parsing (iters depth cheap expensive)
   (loop with variables = (random-variables cheap expensive)
@@ -183,105 +188,54 @@
 
 (defun test-simplify (iters depth cheap expensive)
   (loop with variables = (random-variables cheap expensive)
-       repeat iters
-       for original      = (random-expression depth variables)
-       for simplified    = (simplify original)
-       for original-fn   = (compile-expression original variables)
-       for simplified-fn = (compile-expression simplified variables)
-       always (loop for i below (expt 2 (+ cheap expensive))
-                   for args = (number-to-booleans i (+ cheap expensive))
-                   for orig-result = (apply original-fn args)
-                   for simp-result = (apply simplified-fn args)
-                   unless (eql orig-result simp-result) do
-                   (format t "~&~s ;; orig~&~s ;; simplified~&~a ;; args" original simplified args)
-                   always (eql orig-result simp-result))))
+     repeat iters
+     for original      = (random-expression depth variables)
+     for simplified    = (simplify original)
+     for original-fn   = (compile-expression original variables)
+     for simplified-fn = (compile-expression simplified variables)
+     always (loop for i below (expt 2 (+ cheap expensive))
+               for args = (number-to-booleans i (+ cheap expensive))
+               for orig-result = (apply original-fn args)
+               for simp-result = (apply simplified-fn args)
+               unless (eql orig-result simp-result) do
+                 (format t "~&~s ;; orig~&~s ;; simplified~&~a ;; args" original simplified args)
+               always (eql orig-result simp-result))))
 
-
-;;; 3. First pass predicates are correct.
-
-
-
-
-
-;;;
-;;; To test: generate a random expression. Convert to first-pass
-;;; predicate. Turn each into a function. For each permutation of the
-;;; cheap variables get the value of the first-pass function and make
-;;; sure there's some permutation of the expensive variables that when
-;;; passed, along with the same cheap variable values, to the full
-;;; function yields the same result. I.e. if the first-pass function
-;;; says true, there must exist a permutation of expensive vars that
-;;; the full returns true. And if the first-pass returns false, then
-;;; all permutations of the expensive vars must return false.
-
-;;; Scoring: score = input.count { x => !g(x) }
-
-;;; I.e. given the correctness constraint that g(x) must return true
-;;; when f(x) does, maximize the number of items that it excludes by
-;;; returning false. To find the best possible score, find all the
-;;; permutations of all variables such that f(x) is always
-;;; false. (Those are the ones for which g(x) could legitimately
-;;; return false.) Then from the unique permutations of the cheap
-;;; variables, see for how many g(x) returns false.
+;;; 3. First pass predicates are correct. Generate a random expression
+;;; with n cheap variables and m expensive. Compute a first-pass
+;;; predicate. Walk through all possible values of the cheap variables
+;;; and whenever the first-pass predicate returns false, check the
+;;; full function with all possible values of the expensive variables
+;;; (combined with the current values of the cheap variables) to make
+;;; sure it is never true.
 
 (defparameter *verbose-check* nil)
 
-(defun test (input-line)
-  (let* ((full-expression (parse input-line))
-         (first-pass (first-pass-predicate full-expression))
-         (all-variables (variables full-expression))
-         (cheap-variables (remove-if-not #'cheap-p all-variables))
-         (num-cheap (length cheap-variables))
-         (num-expensive (- (length all-variables) num-cheap))
-         (full-fn (compile nil (expression-fn full-expression all-variables)))
-         (cheap-fn (compile nil (expression-fn first-pass cheap-variables))))
-    (format t "~&~a~&variables: ~a (~d cheap; ~d expensive)~&cheap: ~a" input-line all-variables num-cheap num-expensive (unparse first-pass))
-    (let* ((points 0)
-           (ok
-            (loop for i below (expt 2 num-cheap)
-               for cheap-args = (number-to-booleans i num-cheap)
-               for cheap-result = (apply cheap-fn cheap-args)
-               when (not cheap-result) do
-                 (incf points)
-                 (when *verbose-check* (format t "~&args: ~a => ~a" cheap-args cheap-result))
-
-               always (or cheap-result (check-all-false full-fn cheap-args num-expensive)))))
-      (values ok points))))
-
-(defun check-all-false (full-fn cheap-args num-expensive)
-  (loop for i below (expt 2 num-expensive)
-     for args = (append cheap-args (number-to-booleans i num-expensive))
-     for result = (apply full-fn args)
-     when *verbose-check* do (format t "~&  ~a => ~a" args result)
-     never result))
-
-
-
-
-
-
-(defun variables (expr)
-  (labels ((walk (x acc)
-               (typecase x
-                 (symbol (if (member x '(nil t and or not)) acc (cons x acc)))
-                 (cons (walk (car x) (walk (cdr x) acc))))))
-    (sort (delete-duplicates (walk expr ())) #'string<)))
+(defun test-predicates (iters depth cheap expensive)
+  (loop with variables = (random-variables cheap expensive)
+     repeat iters
+     for original     = (random-expression depth variables)
+     for predicate    = (first-pass-predicate original)
+     for original-fn  = (compile-expression original variables)
+     for predicate-fn = (compile-expression predicate (remove-if-not #'cheap-p variables))
+     always (loop for i below (expt 2 cheap)
+               for args = (number-to-booleans i cheap)
+               for predicate-result = (apply predicate-fn args)
+               always (or predicate-result ;; predicate says true, whatever.
+                          (loop for j below (expt 2 expensive)
+                             for extra-args = (number-to-booleans j expensive)
+                             for full-result = (apply original-fn (append args extra-args))
+                             if full-result do
+                               (format t "~&~s ;; orig~&~s ;; predicate~&~a ;; cheap~&~a ;; expensive" original predicate args extra-args)
+                             never full-result)))))
 
 (defun expression-fn (expr variables)
   `(lambda (,@variables) (declare (ignorable ,@variables)) ,expr))
 
 (defun compile-expression (expr variables)
-  (compile nil (expression-fn expr variables)))
+  (let ((*error-output* (make-broadcast-stream)))
+    (compile nil (expression-fn expr variables))))
 
 (defun number-to-booleans (n bits)
   (loop for i downfrom (1- bits) to 0
        collect (ldb-test (byte 1 i) n)))
-
-(defun generate-and-invoke (depth num-variables)
-  (let* ((vars (random-variables num-variables 0))
-         (expr (random-expression depth vars))
-         (source (expression-fn expr vars))
-         (fn (compile nil source))
-         (args (number-to-booleans (random (expt 2 num-variables)) (1- num-variables))))
-    (print `(,source ,args))
-    (apply fn args)))

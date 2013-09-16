@@ -32,7 +32,6 @@
      (destructuring-bind (op . args) expression
        (format nil "(~(~a~) ~{~a~^ ~})" op (mapcar #'unparse args))))))
 
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Actual computaion of first-pass-predicate.
 
@@ -100,8 +99,9 @@
         (t (values new1 new2))))))
 
 (defun rewrite (exp must-be-table)
-  (let ((new (sublis must-be-table exp)))
-    (values new (not (equal new exp)))))
+  (let* ((new (sublis must-be-table exp))
+         (changed (not (equal new exp))))
+    (values (if changed (simplify new) exp) changed)))
 
 (defun count-literals (exp)
   (cond
@@ -118,8 +118,8 @@
      (unless (literal-p expr)
        (list (cons expr value))))
     (cons
-     (cons
-      (cons expr value)
+     (list*
+      `(,expr . value)
       (case (car expr)
         (and
          (when value

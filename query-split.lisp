@@ -4,7 +4,6 @@
 
 (in-package :query-split)
 
-
 (defun code-challenge (file)
   (with-open-file (in file)
       (loop for line = (read-line in nil nil) while line
@@ -15,6 +14,29 @@
                    (make-pathname :type "out" :defaults file)
                    :direction :output :if-exists :supersede)
     (code-challenge file)))
+
+(defun check-results (input-file results-file)
+  "Given an input file of expressions to write filters for and a file
+  containing computed filters, check that all the filters are correct
+  and compute their score."
+  (let ((correct 0)
+        (incorrect 0)
+        (total-falses 0)
+        (total-tree-size 0))
+    (with-open-file (f1 input-file)
+      (with-open-file (f2 results-file)
+        (loop for original = (read-line f1 nil nil)
+           for predicate = (read-line f2 nil nil)
+           while original
+           do (multiple-value-bind (ok trues falses)
+                  (check-predicate (parse original) (parse predicate))
+                (declare (ignore trues))
+                (write-char (if ok #\. #\F))
+                (force-output)
+                (incf total-falses falses)
+                (if ok (incf correct) (incf incorrect))
+                (incf total-tree-size (tree-size (parse predicate)))))))
+    (values (zerop incorrect) total-falses total-tree-size correct incorrect)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Parsing
@@ -86,6 +108,8 @@
         ((equal arg1 arg2) arg1)
         ((equal arg1 `(not ,arg2)) (not id))
         ((equal arg2 `(not ,arg1)) (not id))
+        ((de-morgan-p arg1 arg2)
+         `(not (,(if (eql op 'and) 'or 'and) ,(cadr arg1) ,(cadr arg2))))
         (t `(,op ,arg1 ,arg2))))))
 
 (defun simplify-not (exp)
@@ -97,6 +121,11 @@
         ((eql arg nil) t)
         ((and (consp arg) (eql (car arg) 'not)) (cadr arg))
         (t `(not ,arg))))))
+
+(defun de-morgan-p (arg1 arg2)
+  (and (consp arg1) (eql (car arg1) 'not)
+       (consp arg2) (eql (car arg2) 'not)))
+
 
 (defun rewrite-one-arg (arg1 arg2 id)
   (multiple-value-bind (new1 changed1) (rewrite arg1 (must-be id arg2))
@@ -216,18 +245,35 @@
      repeat iters
      for original     = (random-expression depth variables)
      for predicate    = (first-pass-predicate original)
-     for original-fn  = (compile-expression original variables)
-     for predicate-fn = (compile-expression predicate (remove-if-not #'cheap-p variables))
-     always (loop for i below (expt 2 cheap)
-               for args = (number-to-booleans i cheap)
-               for predicate-result = (apply predicate-fn args)
-               always (or predicate-result ;; predicate says true, whatever.
-                          (loop for j below (expt 2 expensive)
-                             for extra-args = (number-to-booleans j expensive)
-                             for full-result = (apply original-fn (append args extra-args))
-                             if full-result do
-                               (format t "~&~s ;; orig~&~s ;; predicate~&~a ;; cheap~&~a ;; expensive" original predicate args extra-args)
-                             never full-result)))))
+     always (check-predicate original predicate)))
+
+(defun check-predicate (original predicate)
+  (let* ((variables (variables original))
+         (cheap (count-if #'cheap-p variables))
+         (expensive (count-if-not #'cheap-p variables))
+         (original-fn (compile-expression original variables))
+         (predicate-fn (compile-expression predicate (remove-if-not #'cheap-p variables)))
+         (trues 0)
+         (falses 0))
+    (values
+     (loop for i below (expt 2 cheap)
+        for args = (number-to-booleans i cheap)
+        for predicate-result = (apply predicate-fn args)
+        do (if predicate-result (incf trues) (incf falses))
+        always (or predicate-result ;; predicate says true, whatever.
+                   (loop for j below (expt 2 expensive)
+                      for extra-args = (number-to-booleans j expensive)
+                      never (apply original-fn (append args extra-args)))))
+     trues falses)))
+
+(defun variables (exp)
+  (labels ((walk (x acc)
+             (typecase x
+               (symbol
+                (if (member x '(t nil or and not)) acc (cons x acc)))
+               (cons
+                (walk (car x) (walk (cdr x) acc))))))
+    (sort (delete-duplicates (walk exp ())) #'string<)))
 
 (defun expression-fn (expr variables)
   `(lambda (,@variables) (declare (ignorable ,@variables)) ,expr))
@@ -239,3 +285,6 @@
 (defun number-to-booleans (n bits)
   (loop for i downfrom (1- bits) to 0
        collect (ldb-test (byte 1 i) n)))
+
+(defun tree-size (exp)
+  (if (consp exp) (+ 1 (tree-size (car exp)) (tree-size (cdr exp))) 0))

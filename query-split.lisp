@@ -37,7 +37,7 @@
 ;;; Actual computaion of first-pass-predicate.
 
 (defun first-pass-predicate (expression)
-  (simplify (bias-to t expression)))
+  (simplify (bias-to t (simplify expression))))
 
 (defun bias-to (bias exp)
   (typecase exp
@@ -67,22 +67,16 @@
 
 (defun simplify-and/or (exp id)
   (destructuring-bind (op arg1 arg2) exp
-    (let ((arg1 (simplify arg1))
-          (arg2 (simplify arg2)))
-      ;; need to check this before rewriting lest we rewrite,
-      ;; e.g. (and a a) => (and t t) => t
-      (if (equal arg1 arg2)
-          arg1
-          (let ((arg1 (maybe-rewrite arg1 (must-be id arg2)))
-                (arg2 (maybe-rewrite arg2 (must-be id arg1))))
-            (cond
-              ((or (eql arg1 (not id)) (eql arg2 (not id))) (not id))
-              ((eql arg1 id) arg2)
-              ((eql arg2 id) arg1)
-              ((equal arg1 arg2) arg1)
-              ((equal arg1 `(not ,arg2)) (not id))
-              ((equal arg2 `(not ,arg1)) (not id))
-              (t `(,op ,arg1 ,arg2))))))))
+    (multiple-value-bind (arg1 arg2)
+        (rewrite-one-arg (simplify arg1) (simplify arg2) id)
+      (cond
+        ((or (eql arg1 (not id)) (eql arg2 (not id))) (not id))
+        ((eql arg1 id) arg2)
+        ((eql arg2 id) arg1)
+        ((equal arg1 arg2) arg1)
+        ((equal arg1 `(not ,arg2)) (not id))
+        ((equal arg2 `(not ,arg1)) (not id))
+        (t `(,op ,arg1 ,arg2))))))
 
 (defun simplify-not (exp)
   (destructuring-bind (op arg) exp
@@ -94,9 +88,26 @@
         ((and (consp arg) (eql (car arg) 'not)) (cadr arg))
         (t `(not ,arg))))))
 
-(defun maybe-rewrite (exp must-be-table)
+(defun rewrite-one-arg (arg1 arg2 id)
+  (multiple-value-bind (new1 changed1) (rewrite arg1 (must-be id arg2))
+    (multiple-value-bind (new2 changed2) (rewrite arg2 (must-be id arg1))
+      (cond
+        ((and changed1 changed2)
+         (if (> (+ (count-literals new1) (count-literals arg2))
+                (+ (count-literals arg1) (count-literals arg1)))
+             (values new1 arg2)
+             (values arg1 new2)))
+        (t (values new1 new2))))))
+
+(defun rewrite (exp must-be-table)
   (let ((new (sublis must-be-table exp)))
-    (if (not (equal new exp)) (simplify new) exp)))
+    (values new (not (equal new exp)))))
+
+(defun count-literals (exp)
+  (cond
+    ((literal-p exp) 1)
+    ((consp exp) (reduce #'+ (mapcar #'count-literals (rest exp))))
+    (t 0)))
 
 (defun must-be (value expr)
   "Assuming that expr must evaluate to the given value, return an
@@ -153,6 +164,45 @@
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Testing.
+
+;;; 1. parse and unparse are identities. Generate random expression.
+;;; (equal original (parse (unparse original)))
+
+(defun test-parsing (iters depth cheap expensive)
+  (loop with variables = (random-variables cheap expensive)
+     repeat iters
+     for original = (random-expression depth variables)
+     for back = (parse (unparse original))
+     unless (equal original back) do (format t "~a != ~a" original back)
+     always (equal original (parse (unparse original)))))
+
+;;; 2. (simplify x) and x are equivalent for all x. Generate random x
+;;; with n variables. Walk through all possible values for those
+;;; variables and check that (eql (apply x-fn args) (apply
+;;; simplified-x-fn args))
+
+(defun test-simplify (iters depth cheap expensive)
+  (loop with variables = (random-variables cheap expensive)
+       repeat iters
+       for original      = (random-expression depth variables)
+       for simplified    = (simplify original)
+       for original-fn   = (compile-expression original variables)
+       for simplified-fn = (compile-expression simplified variables)
+       always (loop for i below (expt 2 (+ cheap expensive))
+                   for args = (number-to-booleans i (+ cheap expensive))
+                   for orig-result = (apply original-fn args)
+                   for simp-result = (apply simplified-fn args)
+                   unless (eql orig-result simp-result) do
+                   (format t "~&~s ;; orig~&~s ;; simplified~&~a ;; args" original simplified args)
+                   always (eql orig-result simp-result))))
+
+
+;;; 3. First pass predicates are correct.
+
+
+
+
+
 ;;;
 ;;; To test: generate a random expression. Convert to first-pass
 ;;; predicate. Turn each into a function. For each permutation of the
@@ -183,8 +233,8 @@
          (cheap-variables (remove-if-not #'cheap-p all-variables))
          (num-cheap (length cheap-variables))
          (num-expensive (- (length all-variables) num-cheap))
-         (full-fn (compile nil (compile-expression full-expression all-variables)))
-         (cheap-fn (compile nil (compile-expression first-pass cheap-variables))))
+         (full-fn (compile nil (expression-fn full-expression all-variables)))
+         (cheap-fn (compile nil (expression-fn first-pass cheap-variables))))
     (format t "~&~a~&variables: ~a (~d cheap; ~d expensive)~&cheap: ~a" input-line all-variables num-cheap num-expensive (unparse first-pass))
     (let* ((points 0)
            (ok
@@ -217,8 +267,11 @@
                  (cons (walk (car x) (walk (cdr x) acc))))))
     (sort (delete-duplicates (walk expr ())) #'string<)))
 
-(defun compile-expression (expr variables)
+(defun expression-fn (expr variables)
   `(lambda (,@variables) (declare (ignorable ,@variables)) ,expr))
+
+(defun compile-expression (expr variables)
+  (compile nil (expression-fn expr variables)))
 
 (defun number-to-booleans (n bits)
   (loop for i downfrom (1- bits) to 0
@@ -227,7 +280,7 @@
 (defun generate-and-invoke (depth num-variables)
   (let* ((vars (random-variables num-variables 0))
          (expr (random-expression depth vars))
-         (source (compile-expression expr vars))
+         (source (expression-fn expr vars))
          (fn (compile nil source))
          (args (number-to-booleans (random (expt 2 num-variables)) (1- num-variables))))
     (print `(,source ,args))

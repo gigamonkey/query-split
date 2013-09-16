@@ -48,7 +48,6 @@
      correct
      incorrect)))
 
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Parsing
 
@@ -133,32 +132,23 @@
         ((and (consp arg) (eql (car arg) 'not)) (cadr arg))
         (t `(not ,arg))))))
 
-(defun de-morgan-p (arg1 arg2)
-  (and (consp arg1) (eql (car arg1) 'not)
-       (consp arg2) (eql (car arg2) 'not)))
-
-
 (defun rewrite-one-arg (arg1 arg2 id)
+  "Rewrite one or the other arg under the assumption that the other
+one must take on the identify value. If both can be rewritten, prefer
+the one that leads to the most literals being introduced."
   (multiple-value-bind (new1 changed1) (rewrite arg1 (must-be id arg2))
     (multiple-value-bind (new2 changed2) (rewrite arg2 (must-be id arg1))
       (cond
         ((and changed1 changed2)
-         (if (> (+ (count-literals new1) (count-literals arg2))
-                (+ (count-literals arg1) (count-literals arg1)))
-             (values new1 arg2)
-             (values arg1 new2)))
+         (if (> (count-literals new1) (count-literals new2))
+           (values new1 arg2)
+           (values arg1 new2)))
         (t (values new1 new2))))))
 
 (defun rewrite (exp must-be-table)
   (let* ((new (sublis must-be-table exp))
          (changed (not (equal new exp))))
     (values (if changed (simplify new) exp) changed)))
-
-(defun count-literals (exp)
-  (cond
-    ((literal-p exp) 1)
-    ((consp exp) (reduce #'+ (mapcar #'count-literals (rest exp))))
-    (t 0)))
 
 (defun must-be (value expr)
   "Assuming that expr must evaluate to the given value, return an
@@ -179,6 +169,16 @@
          (unless value
            (mapcan #'(lambda (x) (must-be nil x)) (cdr expr))))
         (not (must-be (not value) (cadr expr))))))))
+
+(defun count-literals (exp)
+  (cond
+    ((literal-p exp) 1)
+    ((consp exp) (reduce #'+ (mapcar #'count-literals (rest exp))))
+    (t 0)))
+
+(defun de-morgan-p (arg1 arg2)
+  (and (consp arg1) (eql (car arg1) 'not)
+       (consp arg2) (eql (car arg2) 'not)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Generating random expressions

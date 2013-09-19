@@ -80,6 +80,13 @@
 ;;; Actual computaion of first-pass-predicate.
 
 (defun first-pass-predicate (expression)
+  (eliminate-expensive (simplify expression)))
+
+;; XXX if we cannonicalize forms before or as part of simplification,
+;; then we can elminate more equivalent things (or x x') where x and
+;; x' may be something like (and v1 v2) (and v2 v1)
+
+(defun old-first-pass-predicate (expression)
   (simplify (bias-to t (simplify expression))))
 
 (defun bias-to (bias exp)
@@ -91,12 +98,101 @@
        (let ((bias (if (eql op 'not) (not bias) bias)))
          `(,op ,@(mapcar #'(lambda (x) (bias-to bias x)) args)))))))
 
+(defun categorize-expensive (exp)
+  (labels ((walk (x trues falses bias)
+             (typecase x
+               (symbol
+                (if (expensive-p x)
+                  (if bias
+                    (list (cons x trues) falses)
+                    (list trues (cons x falses)))
+                  (list trues falses)))
+               (cons
+                (case (first x)
+                  (not (walk (second x) trues falses (not bias)))
+                  ((and or)
+                   (destructuring-bind (ts fs) (walk (second x) trues falses bias)
+                     (walk (third x) ts fs bias))))))))
+    (destructuring-bind (trues falses)
+        (mapcar #'delete-duplicates (walk exp () () t))
+      (list (set-difference trues falses)
+            (set-difference falses trues)
+            (intersection trues falses)))))
+
+(defun or-both (exp var)
+  `(or
+    ,(sublis (acons var t ()) exp)
+    ,(sublis (acons var nil ()) exp)))
+
+(defun or-both/lca (exp var)
+  (let ((lca (least-common-ancestor exp var)))
+    (if lca ;; Can be nil if next variable was eliminated in earlier step's simplification
+      (subst (or-both lca var) lca exp)
+      exp)))
+
+(defun eliminate-expensive (exp)
+  (multiple-value-bind (new both) (first-pass-fix-point exp)
+    (second-pass new both)))
+
+(defun first-pass-fix-point (exp)
+  (destructuring-bind (ts fs bs) (categorize-expensive exp)
+    (let* ((must-be (nconc (constant-alist ts t) (constant-alist fs nil))))
+      (multiple-value-bind (new changed) (rewrite exp must-be)
+        (if changed (first-pass-fix-point new) (values new bs))))))
+
+(defun constant-alist (list value)
+  (mapcar (lambda (x) (cons x value)) list))
+
+(defun second-pass (exp both)
+  (reduce #'one-step both :initial-value exp))
+
+(defun one-step (exp var)
+  (let ((out (simplify (or-both/lca exp var))))
+    ;;(format t "~&In size: ~:d; out size: ~:d" (tree-size exp) (tree-size out))
+    ;;(force-output)
+    out))
+
+(defun least-common-ancestor (exp var)
+  (typecase exp
+    (symbol (and (eql exp var) var))
+    (cons
+     (case (car exp)
+       (not (least-common-ancestor (cadr exp) var))
+       ((and or)
+        (let ((left (least-common-ancestor (cadr exp) var))
+              (right (least-common-ancestor (caddr exp) var)))
+          (if (and left right)
+            exp
+            (or left right))))))))
+
+
+
 (defun literal-p (var) (member var '(t nil)))
 
 (defun cheap-p (var) (char= (char (string var) 0) #\V))
 
+(defun expensive-p (var) (char= (char (string var) 0) #\W))
+
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Expression simplification.
+
+;; to simplify more
+
+;; flatten ands and ors from the bottom up.
+;; undistribute common factors of ors.
+;; delete dups
+;; (and x) => x
+;; (or x) => x
+;; (and) => t
+;; (or) => nil
+;; remove ts from ands
+;; remove nils from ors
+;; (and ... nil ...) => nil (could be handled be simplifying after unflattening)
+;; (or ... t ...) => t (could be handled be simplifying after unflattening)
+;; sort
+;; unflatten
+;; maybe simpify again.
+
 
 (defun simplify (exp)
   (typecase exp
@@ -179,6 +275,30 @@ the one that leads to the most literals being introduced."
 (defun de-morgan-p (arg1 arg2)
   (and (consp arg1) (eql (car arg1) 'not)
        (consp arg2) (eql (car arg2) 'not)))
+
+
+
+(defun undistribute (exp)
+  (let ((common-factors (reduce #'intersection (mapcar #'factors (rest exp)))))
+    `(and ,@common-factors
+          (or ,@(mapcar #'(lamboda (x) (remove-factors x common-factors)) (rest exp))))))
+
+(defun factors (exp)
+  (typecase exp
+    (symbol exp)
+    (cons
+     (assert (eql (car exp) 'and))
+     (rest exp))))
+
+(defun mkand (x) (if (consp x) x `(and ,x)))
+
+(defun remove-factors (exp factors)
+  (let ((remaining (set-difference (rest (mkand exp)) factors)))
+    (cond
+      ((not remaining) t)
+      ((not (cdr remaining)) (car remaining))
+      (t `(and ,@remaining)))))
+
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Generating random expressions
@@ -299,3 +419,19 @@ the one that leads to the most literals being introduced."
 
 (defun tree-size (exp)
   (if (consp exp) (+ 1 (tree-size (car exp)) (tree-size (cdr exp))) 0))
+
+(defun check-syntax (exp &optional label)
+  (typecase exp
+    (symbol exp)
+    (cons
+     (case (car exp)
+       (not (assert (cdr exp) () "[~a] exp: ~a" label exp)
+            (assert (not (cddr exp)) () "[~a] exp: ~a" label exp)
+            (check-syntax (cadr exp) label))
+       ((and or)
+        (assert (cdr exp) nil "[~a] exp: ~a" label exp)
+        (assert (cddr exp) nil "[~a] exp: ~a" label exp)
+        (assert (not (cdddr exp)) () "[~a] exp: ~a" label exp)
+        (check-syntax (cadr exp) label)
+        (check-syntax (caddr exp) label)))))
+  exp)

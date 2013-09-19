@@ -80,7 +80,6 @@
 ;;; Actual computaion of first-pass-predicate.
 
 (defun first-pass-predicate (expression)
-  #+(or)(simplify (bias-to t (simplify expression)))
   (eliminate-expensive (simplify expression)))
 
 ;; XXX if we cannonicalize forms before or as part of simplification,
@@ -149,8 +148,8 @@
 
 (defun one-step (exp var)
   (let ((out (simplify (or-both/lca exp var))))
-    (format t "~&In size: ~:d; out size: ~:d" (tree-size exp) (tree-size out))
-    (force-output)
+    ;;(format t "~&In size: ~:d; out size: ~:d" (tree-size exp) (tree-size out))
+    ;;(force-output)
     out))
 
 (defun least-common-ancestor (exp var)
@@ -176,6 +175,24 @@
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Expression simplification.
+
+;; to simplify more
+
+;; flatten ands and ors from the bottom up.
+;; undistribute common factors of ors.
+;; delete dups
+;; (and x) => x
+;; (or x) => x
+;; (and) => t
+;; (or) => nil
+;; remove ts from ands
+;; remove nils from ors
+;; (and ... nil ...) => nil (could be handled be simplifying after unflattening)
+;; (or ... t ...) => t (could be handled be simplifying after unflattening)
+;; sort
+;; unflatten
+;; maybe simpify again.
+
 
 (defun simplify (exp)
   (typecase exp
@@ -258,6 +275,30 @@ the one that leads to the most literals being introduced."
 (defun de-morgan-p (arg1 arg2)
   (and (consp arg1) (eql (car arg1) 'not)
        (consp arg2) (eql (car arg2) 'not)))
+
+
+
+(defun undistribute (exp)
+  (let ((common-factors (reduce #'intersection (mapcar #'factors (rest exp)))))
+    `(and ,@common-factors
+          (or ,@(mapcar #'(lamboda (x) (remove-factors x common-factors)) (rest exp))))))
+
+(defun factors (exp)
+  (typecase exp
+    (symbol exp)
+    (cons
+     (assert (eql (car exp) 'and))
+     (rest exp))))
+
+(defun mkand (x) (if (consp x) x `(and ,x)))
+
+(defun remove-factors (exp factors)
+  (let ((remaining (set-difference (rest (mkand exp)) factors)))
+    (cond
+      ((not remaining) t)
+      ((not (cdr remaining)) (car remaining))
+      (t `(and ,@remaining)))))
+
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Generating random expressions

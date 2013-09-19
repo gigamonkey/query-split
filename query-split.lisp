@@ -80,7 +80,8 @@
 ;;; Actual computaion of first-pass-predicate.
 
 (defun first-pass-predicate (expression)
-  (simplify (bias-to t (simplify expression))))
+  #+(or)(simplify (bias-to t (simplify expression)))
+  (eliminate-expensive (simplify expression)))
 
 (defun bias-to (bias exp)
   (typecase exp
@@ -91,9 +92,96 @@
        (let ((bias (if (eql op 'not) (not bias) bias)))
          `(,op ,@(mapcar #'(lambda (x) (bias-to bias x)) args)))))))
 
+(defun categorize-expensive (exp)
+  (labels ((walk (x trues falses bias)
+             (typecase x
+               (symbol
+                (if (expensive-p x)
+                  (if bias
+                    (list (cons x trues) falses)
+                    (list trues (cons x falses)))
+                  (list trues falses)))
+               (cons
+                (case (first x)
+                  (not (walk (second x) trues falses (not bias)))
+                  ((and or)
+                   (destructuring-bind (ts fs) (walk (second x) trues falses bias)
+                     (walk (third x) ts fs bias))))))))
+    (destructuring-bind (trues falses)
+        (mapcar #'delete-duplicates (walk exp () () t))
+      (list (set-difference trues falses)
+            (set-difference falses trues)
+            (intersection trues falses)))))
+
+(defun or-both (exp var)
+  `(or
+    ,(sublis (acons var t ()) exp)
+    ,(sublis (acons var nil ()) exp)))
+
+(defun or-both/lca (exp var)
+  (let ((lca (least-common-ancestor exp var)))
+    (if lca
+      (check-syntax (subst (check-syntax (or-both lca var) "or both out") lca exp) "or-both/lca out with lca")
+      (check-syntax (check-syntax (or-both lca var) "or both out") "or-both/lca out no lca"))))
+
+(defun check-syntax (exp &optional label)
+  (typecase exp
+    (symbol exp)
+    (cons
+     (case (car exp)
+       (not (assert (cdr exp) () "[~a] exp: ~a" label exp)
+            (assert (not (cddr exp)) () "[~a] exp: ~a" label exp)
+            (check-syntax (cadr exp) label))
+       ((and or)
+        (assert (cdr exp) nil "[~a] exp: ~a" label exp)
+        (assert (cddr exp) nil "[~a] exp: ~a" label exp)
+        (assert (not (cdddr exp)) () "[~a] exp: ~a" label exp)
+        (check-syntax (cadr exp) label)
+        (check-syntax (caddr exp) label)))))
+  exp)
+
+(defun eliminate-expensive (exp)
+  (multiple-value-bind (new both) (first-pass-fix-point exp)
+    (second-pass (check-syntax new "from first pass") both)))
+
+(defun first-pass-fix-point (exp)
+  (destructuring-bind (ts fs bs) (categorize-expensive exp)
+    (let* ((must-be (nconc (constant-alist ts t) (constant-alist fs nil))))
+      (multiple-value-bind (new changed) (rewrite exp must-be)
+        (if changed (first-pass-fix-point new) (values new bs))))))
+
+(defun constant-alist (list value)
+  (mapcar (lambda (x) (cons x value)) list))
+
+(defun second-pass (exp both)
+  (reduce #'(lambda (x y) (check-syntax x "reducing") (one-step x y)) both :initial-value (check-syntax exp "initial value second pass")))
+
+(defun one-step (exp var)
+  (let ((out (simplify (or-both/lca exp var))))
+    (format t "~&In size: ~:d; out size: ~:d" (tree-size exp) (tree-size out))
+    (force-output)
+    (check-syntax out "one-step output")))
+
+(defun least-common-ancestor (exp var)
+  (typecase exp
+    (symbol (and (eql exp var) var))
+    (cons
+     (case (car exp)
+       (not (least-common-ancestor (cadr exp) var))
+       ((and or)
+        (let ((left (least-common-ancestor (cadr exp) var))
+              (right (least-common-ancestor (caddr exp) var)))
+          (if (and left right)
+            exp
+            (or left right))))))))
+
+
+
 (defun literal-p (var) (member var '(t nil)))
 
 (defun cheap-p (var) (char= (char (string var) 0) #\V))
+
+(defun expensive-p (var) (char= (char (string var) 0) #\W))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Expression simplification.
@@ -103,8 +191,8 @@
     (symbol exp)
     (cons
      (case (car exp)
-       (and (simplify-and/or exp t))
-       (or (simplify-and/or exp nil))
+       (and (check-syntax (simplify-and/or exp t) "simplify-and/or out"))
+       (or (check-syntax (simplify-and/or exp nil) "simplify-and/or out"))
        (not (simplify-not exp))))))
 
 (defun simplify-and/or (exp id)

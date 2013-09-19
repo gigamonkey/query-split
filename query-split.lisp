@@ -83,6 +83,13 @@
   #+(or)(simplify (bias-to t (simplify expression)))
   (eliminate-expensive (simplify expression)))
 
+;; XXX if we cannonicalize forms before or as part of simplification,
+;; then we can elminate more equivalent things (or x x') where x and
+;; x' may be something like (and v1 v2) (and v2 v1)
+
+(defun old-first-pass-predicate (expression)
+  (simplify (bias-to t (simplify expression))))
+
 (defun bias-to (bias exp)
   (typecase exp
     (symbol
@@ -120,29 +127,13 @@
 
 (defun or-both/lca (exp var)
   (let ((lca (least-common-ancestor exp var)))
-    (if lca
-      (check-syntax (subst (check-syntax (or-both lca var) "or both out") lca exp) "or-both/lca out with lca")
-      (check-syntax (check-syntax (or-both lca var) "or both out") "or-both/lca out no lca"))))
-
-(defun check-syntax (exp &optional label)
-  (typecase exp
-    (symbol exp)
-    (cons
-     (case (car exp)
-       (not (assert (cdr exp) () "[~a] exp: ~a" label exp)
-            (assert (not (cddr exp)) () "[~a] exp: ~a" label exp)
-            (check-syntax (cadr exp) label))
-       ((and or)
-        (assert (cdr exp) nil "[~a] exp: ~a" label exp)
-        (assert (cddr exp) nil "[~a] exp: ~a" label exp)
-        (assert (not (cdddr exp)) () "[~a] exp: ~a" label exp)
-        (check-syntax (cadr exp) label)
-        (check-syntax (caddr exp) label)))))
-  exp)
+    (if lca ;; Can be nil if next variable was eliminated in earlier step's simplification
+      (subst (or-both lca var) lca exp)
+      exp)))
 
 (defun eliminate-expensive (exp)
   (multiple-value-bind (new both) (first-pass-fix-point exp)
-    (second-pass (check-syntax new "from first pass") both)))
+    (second-pass new both)))
 
 (defun first-pass-fix-point (exp)
   (destructuring-bind (ts fs bs) (categorize-expensive exp)
@@ -154,13 +145,13 @@
   (mapcar (lambda (x) (cons x value)) list))
 
 (defun second-pass (exp both)
-  (reduce #'(lambda (x y) (check-syntax x "reducing") (one-step x y)) both :initial-value (check-syntax exp "initial value second pass")))
+  (reduce #'one-step both :initial-value exp))
 
 (defun one-step (exp var)
   (let ((out (simplify (or-both/lca exp var))))
     (format t "~&In size: ~:d; out size: ~:d" (tree-size exp) (tree-size out))
     (force-output)
-    (check-syntax out "one-step output")))
+    out))
 
 (defun least-common-ancestor (exp var)
   (typecase exp
@@ -191,8 +182,8 @@
     (symbol exp)
     (cons
      (case (car exp)
-       (and (check-syntax (simplify-and/or exp t) "simplify-and/or out"))
-       (or (check-syntax (simplify-and/or exp nil) "simplify-and/or out"))
+       (and (simplify-and/or exp t))
+       (or (simplify-and/or exp nil))
        (not (simplify-not exp))))))
 
 (defun simplify-and/or (exp id)
@@ -387,3 +378,19 @@ the one that leads to the most literals being introduced."
 
 (defun tree-size (exp)
   (if (consp exp) (+ 1 (tree-size (car exp)) (tree-size (cdr exp))) 0))
+
+(defun check-syntax (exp &optional label)
+  (typecase exp
+    (symbol exp)
+    (cons
+     (case (car exp)
+       (not (assert (cdr exp) () "[~a] exp: ~a" label exp)
+            (assert (not (cddr exp)) () "[~a] exp: ~a" label exp)
+            (check-syntax (cadr exp) label))
+       ((and or)
+        (assert (cdr exp) nil "[~a] exp: ~a" label exp)
+        (assert (cddr exp) nil "[~a] exp: ~a" label exp)
+        (assert (not (cdddr exp)) () "[~a] exp: ~a" label exp)
+        (check-syntax (cadr exp) label)
+        (check-syntax (caddr exp) label)))))
+  exp)

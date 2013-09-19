@@ -1,24 +1,38 @@
 import scala.collection.immutable.{Map, HashMap}
 
-sealed abstract class Formula
+sealed abstract class Formula {
+  def map(fn: Formula => Formula): Formula
+}
 
 case class And(arg1: Formula, arg2: Formula) extends Formula {
   override def toString = "(and " + arg1 + " " + arg2 + ")"
+
+  def map(fn: Formula => Formula) = And(fn(arg1), fn(arg2))
+
 }
 
 case class Or(arg1: Formula, arg2: Formula) extends Formula {
   override def toString = "(or " + arg1 + " " + arg2 + ")"
+
+  def map(fn: Formula => Formula) = Or(fn(arg1), fn(arg2))
 }
 
 case class Not(arg: Formula) extends Formula {
   override def toString = "(not " + arg + ")"
+
+  def map(fn: Formula => Formula) = Not(fn(arg))
 }
 
 case class Variable(name: String) extends Formula {
   override def toString = name
+
+  def map(fn: Formula => Formula) = fn(this)
 }
 
-sealed abstract class Literal extends Formula { def unary_!(): Literal }
+sealed abstract class Literal extends Formula {
+  def unary_!(): Literal
+  def map(fn: Formula => Formula) = fn(this)
+}
 case object T extends Literal { def unary_! = F }
 case object F extends Literal { def unary_! = T }
 
@@ -30,8 +44,7 @@ object QuerySplit {
     exp match {
       case T | F           => exp
       case Variable(name)  => if (name(0) == 'v') exp else bias
-      case And(arg1, arg2) => And(biasTo(bias, arg1), biasTo(bias, arg2))
-      case Or(arg1, arg2)  => Or(biasTo(bias, arg1), biasTo(bias, arg2))
+      case And(_,_) | Or(_, _) => exp.map(x => biasTo(bias, x))
       case Not(arg)        => Not(biasTo(!bias, arg))
     }
   }
@@ -118,7 +131,6 @@ object QuerySplit {
     val v2 = Variable("v2")
     val w1 = Variable("w1")
     val w2 = Variable("w2")
-
 
     check(T)           // T
     check(F)           // F

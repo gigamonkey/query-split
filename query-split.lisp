@@ -40,13 +40,13 @@
                   (if ok (incf correct) (incf incorrect))
                   (incf total-input-tree-size (tree-size parsed-original))
                   (incf total-output-tree-size (tree-size parsed-predicate)))))))
-    (values
-     (zerop incorrect)
-     total-falses
-     total-output-tree-size
-     (float (/ total-output-tree-size total-input-tree-size) 0d0)
-     correct
-     incorrect)))
+    (list
+     :num-incorrect (zerop incorrect)
+     :total-false total-falses
+     :total-output-tree-size total-output-tree-size
+     :percentage-smaller (float (/ total-output-tree-size total-input-tree-size) 0d0)
+     :correct correct
+     :incorrect incorrect)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Parsing

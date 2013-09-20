@@ -276,16 +276,48 @@ the one that leads to the most literals being introduced."
   (and (consp arg1) (eql (car arg1) 'not)
        (consp arg2) (eql (car arg2) 'not)))
 
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; Flattening based simplification
 
+(defun flatten (exp)
+  "Flatten expression so binary and's and or's are turned into multi-arg versions."
+  (typecase exp
+    (symbol exp)
+    (cons
+     (destructuring-bind (op . args) exp
+       (case op
+         ((and or)
+          `(,op ,@(mapcan #'(lambda (x) (flat-terms op x)) (mapcar #'flatten args))))
+         (not `(not ,(flatten (first args)))))))))
+
+(defun flat-terms (op exp)
+  "Get the list of terms we can extract from an expression, assuming
+we're in the context of op."
+  (typecase exp
+    (symbol (list exp))
+    (cons
+     (cond
+       ((eql op (car exp)) (rest exp))
+       ((de-morgan-p/outer-not op exp) (mapcar #'(lambda (x) `(not ,x)) (cdadr exp)))
+       (t (list exp))))))
+
+(defun de-morgan-p/outer-not (op exp)
+  (and (consp exp)
+       (eql 'not (car exp))
+       (consp (cadr exp))
+       (eql (case op (and 'or) (or 'and)) (caadr exp))))
 
 (defun undistribute (exp)
-  (let ((common-factors (reduce #'intersection (mapcar #'factors (rest exp)))))
-    `(and ,@common-factors
-          (or ,@(mapcar #'(lamboda (x) (remove-factors x common-factors)) (rest exp))))))
+  (let* ((factors (mapcar #'factors (rest exp)))
+         (common-factors (reduce #'(lambda (x y) (intersection x y :test #'equal)) factors)))
+    (if common-factors
+      `(and ,@common-factors
+            (or ,@(mapcar #'(lambda (x) (remove-factors x common-factors)) (rest exp))))
+      exp)))
 
 (defun factors (exp)
   (typecase exp
-    (symbol exp)
+    (symbol (list exp))
     (cons
      (assert (eql (car exp) 'and))
      (rest exp))))

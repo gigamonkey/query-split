@@ -176,24 +176,6 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Expression simplification.
 
-;; to simplify more
-
-;; flatten ands and ors from the bottom up.
-;; undistribute common factors of ors.
-;; delete dups
-;; (and x) => x
-;; (or x) => x
-;; (and) => t
-;; (or) => nil
-;; remove ts from ands
-;; remove nils from ors
-;; (and ... nil ...) => nil (could be handled be simplifying after unflattening)
-;; (or ... t ...) => t (could be handled be simplifying after unflattening)
-;; sort
-;; unflatten
-;; maybe simpify again.
-
-
 (defun simplify (exp)
   (typecase exp
     (symbol exp)
@@ -325,29 +307,61 @@ we're in the context of op."
        (eql (case op (and 'or) (or 'and)) (caadr exp))))
 
 (defun undistribute (exp)
-  (let* ((factors (mapcar #'factors (rest exp)))
-         (common-factors (reduce #'(lambda (x y) (intersection x y :test #'equal)) factors)))
-    (if common-factors
-      `(and ,@common-factors
-            (or ,@(mapcar #'(lambda (x) (remove-factors x common-factors)) (rest exp))))
-      exp)))
+  (assert (and (consp exp) (eql (car exp) 'or)))
+  (multiple-value-bind (common-factors new-terms) (find-common-factors (terms exp))
+    (opify 'and (cons (opify 'or new-terms) common-factors))))
 
 (defun factors (exp)
   (typecase exp
     (symbol (list exp))
     (cons
-     (assert (eql (car exp) 'and))
-     (rest exp))))
+     (case (car exp)
+       (and (mapcan #'factors (rest exp)))
+       (or (list exp))
+       (not
+        (if (de-morgan-p/outer-not 'and exp)
+          (mapcar #'(lambda (x) `(not ,x)) (cdadr exp))
+          (list exp)))))))
 
-(defun mkand (x) (if (consp x) x `(and ,x)))
+(defun terms (exp)
+  (typecase exp
+    (symbol (list exp))
+    (cons
+     (case (car exp)
+       (or (mapcan #'terms (rest exp)))
+       (and (list exp))
+       (not
+        (if (de-morgan-p/outer-not 'or exp)
+          (mapcar #'(lambda (x) `(not ,x)) (cdadr exp))
+          (list exp)))))))
 
 (defun remove-factors (exp factors)
-  (let ((remaining (set-difference (rest (mkand exp)) factors)))
-    (cond
-      ((not remaining) t)
-      ((not (cdr remaining)) (car remaining))
-      (t `(and ,@remaining)))))
+  (flet ((r (x) (remove-factors x factors)))
+    (typecase exp
+      (symbol (if (member exp factors) t exp))
+      (cons
+       (case (car exp)
+         (and `(and ,(r (second exp)) ,(r (third exp))))
+         (or exp)
+         ;; (not (or x y)) can possibly be usefully turned into (and
+         ;; (not x) (not y)) which may allow more factors to be
+         ;; removed if (not x) or (not y) turns into a factor.
+         (not exp))))))
 
+(defun opify (op args)
+  (cond
+    ((null args) (id op))
+    ((null (cdr args)) (simplify (car args)))
+    (t `(,op ,(simplify (first args)) ,(opify op (rest args))))))
+
+(defun find-common-factors (terms)
+  (let ((common-factors (common-factors terms)))
+    (values common-factors
+            (mapcar #'(lambda (x) (simplify (remove-factors x common-factors))) terms))))
+
+(defun common-factors (terms)
+  (let ((factors (mapcar #'factors terms)))
+    (reduce #'(lambda (x y) (intersection x y :test #'equal)) factors)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Generating random expressions

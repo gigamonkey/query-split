@@ -290,6 +290,23 @@ the one that leads to the most literals being introduced."
           `(,op ,@(mapcan #'(lambda (x) (flat-terms op x)) (mapcar #'flatten args))))
          (not `(not ,(flatten (first args)))))))))
 
+(defun id (op)
+  (ecase op (and t) (or nil)))
+
+(defun unflatten (exp)
+  (typecase exp
+    (symbol exp)
+    (cons
+     (destructuring-bind (op . args) exp
+       (case op
+         ((and or)
+          (cond
+           ((null args) (id op))
+           ((null (cdr args)) (car args))
+           ((null (cddr args)) exp)
+           (t `(,op ,(unflatten (car args)) ,(unflatten `(,op ,@(mapcar #'unflatten (cdr args))))))))
+         (not `(not ,(unflatten (car args)))))))))
+
 (defun flat-terms (op exp)
   "Get the list of terms we can extract from an expression, assuming
 we're in the context of op."

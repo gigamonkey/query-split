@@ -82,23 +82,9 @@
 (defun first-pass-predicate (expression)
   (eliminate-expensive (simplify expression)))
 
-;; XXX if we cannonicalize forms before or as part of simplification,
-;; then we can elminate more equivalent things (or x x') where x and
-;; x' may be something like (and v1 v2) (and v2 v1)
-
-(defun old-first-pass-predicate (expression)
-  (simplify (bias-to t (simplify expression))))
-
-(defun bias-to (bias exp)
-  (typecase exp
-    (symbol
-     (if (or (literal-p exp) (cheap-p exp)) exp bias))
-    (cons
-     (destructuring-bind (op . args) exp
-       (let ((bias (if (eql op 'not) (not bias) bias)))
-         `(,op ,@(mapcar #'(lambda (x) (bias-to bias x)) args)))))))
-
 (defun categorize-expensive (exp)
+  "Figure out which expensive variables can be conservatively replaced
+with either t or nil."
   (labels ((walk (x trues falses bias)
              (typecase x
                (symbol
@@ -164,8 +150,6 @@
           (if (and left right)
             exp
             (or left right))))))))
-
-
 
 (defun literal-p (var) (member var '(t nil)))
 
@@ -258,9 +242,6 @@ the one that leads to the most literals being introduced."
   (and (consp arg1) (eql (car arg1) 'not)
        (consp arg2) (eql (car arg2) 'not)))
 
-(defun id (op)
-  (ecase op (and t) (or nil)))
-
 (defun de-morgan-p/outer-not (op exp)
   (and (consp exp)
        (eql 'not (car exp))
@@ -271,6 +252,15 @@ the one that leads to the most literals being introduced."
   (assert (and (consp exp) (eql (car exp) 'or)))
   (multiple-value-bind (common-factors new-terms) (find-common-factors (terms exp))
     (opify 'and (cons (opify 'or new-terms) common-factors))))
+
+(defun opify (op args)
+  (cond
+    ((null args) (id op))
+    ((null (cdr args)) (simplify (car args)))
+    (t `(,op ,(simplify (first args)) ,(opify op (rest args))))))
+
+(defun id (op)
+  (ecase op (and t) (or nil)))
 
 (defun factors (exp)
   (typecase exp
@@ -308,12 +298,6 @@ the one that leads to the most literals being introduced."
          ;; (not x) (not y)) which may allow more factors to be
          ;; removed if (not x) or (not y) turns into a factor.
          (not exp))))))
-
-(defun opify (op args)
-  (cond
-    ((null args) (id op))
-    ((null (cdr args)) (simplify (car args)))
-    (t `(,op ,(simplify (first args)) ,(opify op (rest args))))))
 
 (defun find-common-factors (terms)
   (let ((common-factors (common-factors terms)))
